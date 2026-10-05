@@ -1,0 +1,131 @@
+"use server";
+
+import { eq } from "drizzle-orm";
+import { db } from "@/database/drizzle";
+import { users } from "@/database/schema";
+import { hash } from "bcryptjs";
+import { signIn, signOut } from "@/auth";
+import { headers } from "next/headers";
+import ImageKit from "imagekit";
+import config from "@/lib/config";
+import { CredentialsSignin } from "next-auth";
+
+const checkRateLimit = async (identifier: string) => {
+  if (!process.env.UPSTASH_REDIS_URL || !process.env.UPSTASH_REDIS_TOKEN) {
+    return process.env.NODE_ENV !== "production";
+  }
+
+  const { default: ratelimit } = await import("@/lib/ratelimit");
+  return (await ratelimit.limit(identifier)).success;
+};
+
+const authenticate = async (email: string, password: string) => {
+  const redirectUrl = await signIn("credentials", {
+    email,
+    password,
+    redirect: false,
+    redirectTo: "/",
+  });
+
+  if (new URL(redirectUrl, "http://localhost").searchParams.has("error")) {
+    return { success: false, error: "Invalid email or password." };
+  }
+
+  return { success: true };
+};
+
+export const signInWithCredentials = async (
+  params: Pick<AuthCredentials, "email" | "password">,
+) => {
+  const email = params.email.trim().toLowerCase();
+  const { password } = params;
+
+  try {
+    const ip = (await headers()).get("x-forwarded-for")?.split(",")[0]?.trim() || "127.0.0.1";
+    if (!(await checkRateLimit(ip))) {
+      return {
+        success: false,
+        error: "Sign-in is temporarily unavailable because rate limiting is not configured.",
+      };
+    }
+
+    return await authenticate(email, password);
+  } catch (error) {
+    if (error instanceof CredentialsSignin) {
+      return { success: false, error: "Invalid email or password." };
+    }
+
+    console.error("Sign-in failed", error);
+    return { success: false, error: "Unable to sign in. Please try again." };
+  }
+};
+
+export const logout = async () => {
+  await signOut({ redirectTo: "/sign-in" });
+};
+
+export const signUp = async (params: AuthCredentials) => {
+  const { fullName, universityId, password, universityCard } = params;
+  const email = params.email.trim().toLowerCase();
+
+  try {
+    const ip = (await headers()).get("x-forwarded-for")?.split(",")[0]?.trim() || "127.0.0.1";
+    if (!(await checkRateLimit(ip))) {
+      return {
+        success: false,
+        error: "Sign-up is temporarily unavailable because rate limiting is not configured.",
+      };
+    }
+
+    const existingUser = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+
+    if (existingUser.length > 0) {
+      return { success: false, error: "An account with this email already exists." };
+    }
+
+    const imageMatch = universityCard.match(
+      /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+=*)$/,
+    );
+    if (!imageMatch) {
+      return { success: false, error: "Upload a valid JPG, PNG, or WebP university ID image." };
+    }
+
+    const imageBuffer = Buffer.from(imageMatch[2], "base64");
+    if (imageBuffer.length === 0 || imageBuffer.length > 3 * 1024 * 1024) {
+      return { success: false, error: "The university ID image must be smaller than 3 MB." };
+    }
+
+    const extension = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" }[
+      imageMatch[1]
+    ];
+    const imagekit = new ImageKit({
+      publicKey: config.env.imagekit.publicKey,
+      privateKey: config.env.imagekit.privateKey,
+      urlEndpoint: config.env.imagekit.urlEndpoint,
+    });
+    const uploadedCard = await imagekit.upload({
+      file: imageBuffer,
+      fileName: `university-card-${crypto.randomUUID()}.${extension}`,
+      folder: "/university-cards",
+      isPrivateFile: true,
+    });
+
+    const hashedPassword = await hash(password, 10);
+    await db.insert(users).values({
+      fullName,
+      email,
+      universityId,
+      password: hashedPassword,
+      universityCard: uploadedCard.url,
+    });
+
+    return await authenticate(email, password);
+  } catch (error) {
+    console.error("Sign-up failed", error);
+    return { success: false, error: "Unable to create your account. Please try again." };
+  }
+};
