@@ -16,6 +16,17 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Authentication rate limiting
+
+Authentication requests use Upstash Redis for rate limiting when configured. Create a Redis database in Upstash and add its REST URL and token to `.env.local`:
+
+```env
+UPSTASH_REDIS_URL=
+UPSTASH_REDIS_TOKEN=
+```
+
+Restart the development server after changing environment variables. Local development falls back to an in-memory limiter when these values are absent; production requires both values and rejects authentication requests if the rate-limit service is unavailable. Configure the same variables in your production deployment environment.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

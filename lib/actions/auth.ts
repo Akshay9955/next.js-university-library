@@ -13,8 +13,14 @@ import { workflowClient } from "../workflow";
 
 const localRateLimits = new Map<string, { count: number; resetAt: number }>();
 
+class RateLimitUnavailableError extends Error {}
+
 const checkRateLimit = async (identifier: string) => {
   if (!process.env.UPSTASH_REDIS_URL || !process.env.UPSTASH_REDIS_TOKEN) {
+    if (process.env.NODE_ENV === "production") {
+      throw new RateLimitUnavailableError();
+    }
+
     const now = Date.now();
     const current = localRateLimits.get(identifier);
 
@@ -29,8 +35,12 @@ const checkRateLimit = async (identifier: string) => {
     return true;
   }
 
-  const { default: ratelimit } = await import("@/lib/ratelimit");
-  return (await ratelimit.limit(identifier)).success;
+  try {
+    const { default: ratelimit } = await import("@/lib/ratelimit");
+    return (await ratelimit.limit(identifier)).success;
+  } catch {
+    throw new RateLimitUnavailableError();
+  }
 };
 
 const authenticate = async (email: string, password: string) => {
@@ -56,15 +66,18 @@ export const signInWithCredentials = async (
 
   try {
     const ip = (await headers()).get("x-forwarded-for")?.split(",")[0]?.trim() || "127.0.0.1";
-    if (!(await checkRateLimit(ip))) {
+    if (!(await checkRateLimit(`sign-in:${ip}`))) {
       return {
         success: false,
-        error: "Sign-in is temporarily unavailable because rate limiting is not configured.",
+        error: "Too many sign-in attempts. Please wait a minute and try again.",
       };
     }
 
     return await authenticate(email, password);
   } catch (error) {
+    if (error instanceof RateLimitUnavailableError) {
+      return { success: false, error: "Unable to verify request limits. Please try again shortly." };
+    }
     if (error instanceof CredentialsSignin) {
       return { success: false, error: "Invalid email or password." };
     }
@@ -85,10 +98,10 @@ export const signUp = async (params: AuthCredentials) => {
 
   try {
     const ip = (await headers()).get("x-forwarded-for")?.split(",")[0]?.trim() || "127.0.0.1";
-    if (!(await checkRateLimit(ip))) {
+    if (!(await checkRateLimit(`sign-up:${ip}`))) {
       return {
         success: false,
-        error: "Sign-up is temporarily unavailable because rate limiting is not configured.",
+        error: "Too many sign-up attempts. Please wait a minute and try again.",
       };
     }
 
@@ -138,16 +151,23 @@ export const signUp = async (params: AuthCredentials) => {
       universityCard: uploadedCard.url,
     });
 
-     await workflowClient.trigger({
-      url: `${config.env.prodApiEndpoint}/api/workflows/onboarding`,
-      body: {
-        email,
-        fullName,
-      },
-    });
+    try {
+      await workflowClient.trigger({
+        url: `${config.env.prodApiEndpoint}/api/workflow/onboarding`,
+        body: {
+          email,
+          fullName,
+        },
+      });
+    } catch (error) {
+      console.error("Unable to start onboarding workflow", error);
+    }
   
     return await authenticate(email, password);
   } catch (error) {
+    if (error instanceof RateLimitUnavailableError) {
+      return { success: false, error: "Unable to verify request limits. Please try again shortly." };
+    }
     console.error("Sign-up failed", error);
     return { success: false, error: "Unable to create your account. Please try again." };
   }
