@@ -9,10 +9,24 @@ import { headers } from "next/headers";
 import ImageKit from "imagekit";
 import config from "@/lib/config";
 import { CredentialsSignin } from "next-auth";
+import { workflowClient } from "../workflow";
+
+const localRateLimits = new Map<string, { count: number; resetAt: number }>();
 
 const checkRateLimit = async (identifier: string) => {
   if (!process.env.UPSTASH_REDIS_URL || !process.env.UPSTASH_REDIS_TOKEN) {
-    return process.env.NODE_ENV !== "production";
+    const now = Date.now();
+    const current = localRateLimits.get(identifier);
+
+    if (!current || current.resetAt <= now) {
+      localRateLimits.set(identifier, { count: 1, resetAt: now + 60_000 });
+      return true;
+    }
+
+    if (current.count >= 5) return false;
+
+    current.count += 1;
+    return true;
   }
 
   const { default: ratelimit } = await import("@/lib/ratelimit");
@@ -63,6 +77,7 @@ export const signInWithCredentials = async (
 export const logout = async () => {
   await signOut({ redirectTo: "/sign-in" });
 };
+
 
 export const signUp = async (params: AuthCredentials) => {
   const { fullName, universityId, password, universityCard } = params;
@@ -115,7 +130,7 @@ export const signUp = async (params: AuthCredentials) => {
     });
 
     const hashedPassword = await hash(password, 10);
-    await db.insert(users).values({
+      await db.insert(users).values({
       fullName,
       email,
       universityId,
@@ -123,6 +138,14 @@ export const signUp = async (params: AuthCredentials) => {
       universityCard: uploadedCard.url,
     });
 
+     await workflowClient.trigger({
+      url: `${config.env.prodApiEndpoint}/api/workflows/onboarding`,
+      body: {
+        email,
+        fullName,
+      },
+    });
+  
     return await authenticate(email, password);
   } catch (error) {
     console.error("Sign-up failed", error);
