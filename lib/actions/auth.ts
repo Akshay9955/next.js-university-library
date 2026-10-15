@@ -51,8 +51,8 @@ const authenticate = async (email: string, password: string) => {
     redirectTo: "/",
   });
  
- 
-  if (new URL(redirectUrl, "next-js-university-library.vercel.app").searchParams.has("error")) {
+  
+  if (new URL(redirectUrl, "http://localhost").searchParams.has("error")) {
     return { success: false, error: "Invalid email or password." };
   }
 
