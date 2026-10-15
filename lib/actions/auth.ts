@@ -115,8 +115,8 @@ export const signUp = async (params: AuthCredentials) => {
       return { success: false, error: "An account with this email already exists." };
     }
 
-    const imageMatch = universityCard.match(
-      /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+=*)$/,
+    const imageMatch = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+=*)$/.exec(
+      universityCard,
     );
     if (!imageMatch) {
       return { success: false, error: "Upload a valid JPG, PNG, or WebP university ID image." };
@@ -143,7 +143,7 @@ export const signUp = async (params: AuthCredentials) => {
     });
 
     const hashedPassword = await hash(password, 10);
-      await db.insert(users).values({
+    await db.insert(users).values({
       fullName,
       email,
       universityId,
@@ -154,10 +154,7 @@ export const signUp = async (params: AuthCredentials) => {
     try {
       await workflowClient.trigger({
         url: `${config.env.prodApiEndpoint}/api/workflow/onboarding`,
-        body: {
-          email,
-          fullName,
-        },
+        body: { email, fullName },
       });
     } catch (error) {
       console.error("Unable to start onboarding workflow", error);
